@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import os
+import re
 import sys
 import copy
 import math
@@ -36,9 +37,10 @@ def token_frequency(token_freq_dict, words, labels):
         token_freq_dict[word] += 1
     return token_freq_dict
 
-def entity_frequency(entity_freq_dict, entity_density_list, words, labels):
+def entity_frequency(entity_freq_dict, entity_density_list, entity_cons_dict, words, labels):
     entity = ""
-    in_entity_freq_dict = []
+    in_entity = ""
+    in_entity_freq_dict = {}
     def cnt_function(entity_freq_dict, entity):
         entity = entity.strip()
         if entity not in entity_freq_dict:
@@ -51,26 +53,28 @@ def entity_frequency(entity_freq_dict, entity_density_list, words, labels):
         if label != 0:
             if label % 2 == 1:
                 entity += word + " "
+                in_entity += word + " "
                 try:
                     if labels[idx+1] == 0 or labels[idx+1] == 1:
                         entity_freq_dict, entity = cnt_function(entity_freq_dict, entity)
-                        in_entity_freq_dict, entity = cnt_function(in_entity_freq_dict, entity)
+                        in_entity_freq_dict, in_entity = cnt_function(in_entity_freq_dict, in_entity)
                     else:
                         continue
                 except:
                     entity_freq_dict, entity = cnt_function(entity_freq_dict, entity)
-                    in_entity_freq_dict, entity = cnt_function(in_entity_freq_dict, entity)
+                    in_entity_freq_dict, in_entity = cnt_function(in_entity_freq_dict, in_entity)
             else:
                 entity += word + " "
+                in_entity += word + " "
                 try:
                     if labels[idx+1] != 0:
                         continue
                     else:
                         entity_freq_dict, entity = cnt_function(entity_freq_dict, entity)
-                        in_entity_freq_dict, entity = cnt_function(in_entity_freq_dict, entity)
+                        in_entity_freq_dict, in_entity = cnt_function(in_entity_freq_dict, in_entity)
                 except:
                     entity_freq_dict, entity = cnt_function(entity_freq_dict, entity)
-                    in_entity_freq_dict, entity = cnt_function(in_entity_freq_dict, entity)
+                    in_entity_freq_dict, in_entity = cnt_function(in_entity_freq_dict, in_entity)
                 
     # get a density of entity per document
     doc_len = len(words)
@@ -80,10 +84,18 @@ def entity_frequency(entity_freq_dict, entity_density_list, words, labels):
         cnt_len += val
     entity_density = cnt_len / doc_len
     entity_density_list.append(entity_density)
-    return entity_freq_dict, entity_density_list
 
-def token_consistency():
-    return None
+    # get a consistency of entity per document
+    
+    sentence = " ".join([word for word in words])
+    for key in in_entity_freq_dict.keys():
+        key_list = re.findall(key, sentence)
+        if key not in entity_cons_dict:
+            entity_cons_dict[key] = []
+
+        entity_cons_dict[key].append(in_entity_freq_dict[key] / len(key_list))
+
+    return entity_freq_dict, entity_density_list, entity_cons_dict
 
 def entity_length(entity_freq_dict):
     entity_len_dict = {key:len(key.split()) for key in entity_freq_dict.keys()}
@@ -105,17 +117,18 @@ def main():
         for file_name in file_list:
             with open(data_dir+'/'+entity_name+'/'+'from_rawdata'+'/'+file_name, 'r') as fp:
                 data = json.load(fp)
-                token_freq_dict = {}
-                entity_freq_dict = {}
-                doc_len = []
-                entity_density_list = []
+                token_freq_dict, entity_freq_dict = {}, {}
+                entity_cons_dict = {}
+                doc_len,entity_density_list = [], []
+
                 for data_idx, data_inst in tqdm(enumerate(data), desc='Total Run'):
                     words = data_inst['str_words']
                     labels = data_inst['tags']
                     
                     token_freq_dict = token_frequency(token_freq_dict, words, labels)
-                    entity_freq_dict, entity_density_list = entity_frequency(entity_freq_dict, entity_density_list, words, labels)
+                    entity_freq_dict, entity_density_list, entity_cons_dict = entity_frequency(entity_freq_dict, entity_density_list, entity_cons_dict, words, labels)
                     doc_len = document_length(doc_len, words)
+
                 entity_len_dict = entity_length(entity_freq_dict)
                     
 if __name__ == "__main__":
