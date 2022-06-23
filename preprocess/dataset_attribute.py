@@ -30,12 +30,45 @@ import numpy as np
 
 from tqdm import tqdm, trange
 
-def token_frequency(token_freq_dict, words, labels):
+def token_frequency(token_freq_dict, token_cons_dict, words, labels):
+    temp_token_cons_dict = {}
     for word in words:
         if word not in token_freq_dict:
             token_freq_dict[word] = 0
         token_freq_dict[word] += 1
-    return token_freq_dict
+
+    for word, label in zip(words, labels):
+        if word not in temp_token_cons_dict:
+            temp_token_cons_dict[word] = {0:0, 1:0, 2:0, 3:0, 4:0}
+        temp_token_cons_dict[word][label] += 1
+
+    for key, val in temp_token_cons_dict.items():
+        if key not in token_cons_dict:
+            token_cons_dict[key] = []
+
+        total_cnt = 0
+        temp_list = []
+        for label_id, label_cnt in val.items():
+            total_cnt += label_cnt
+
+        temp_cnt, temp_cnt2 = 0, 0
+        for label_id, label_cnt in val.items():
+            if label_id == 0:
+                temp_list.append(label_cnt / total_cnt)
+            elif label_id == 1:
+                temp_cnt += label_cnt
+            elif label_id == 2:
+                temp_cnt += label_cnt
+                temp_list.append(temp_cnt / total_cnt)
+            elif label_id == 3:
+                temp_cnt2 += label_cnt
+            elif label_id == 4:
+                temp_cnt2 += label_cnt
+                temp_list.append(temp_cnt2 / total_cnt)
+            
+        token_cons_dict[key].append(temp_list)
+
+    return token_freq_dict, token_cons_dict
 
 def entity_frequency(entity_freq_dict, entity_density_list, entity_cons_dict, words, labels):
     entity = ""
@@ -89,11 +122,16 @@ def entity_frequency(entity_freq_dict, entity_density_list, entity_cons_dict, wo
     
     sentence = " ".join([word for word in words])
     for key in in_entity_freq_dict.keys():
-        key_list = re.findall(key, sentence)
-        if key not in entity_cons_dict:
-            entity_cons_dict[key] = []
+        orig_key = copy.deepcopy(key)
+        specialChars = '~`!@#$%^&*()_-+=[{]}:;\'",<.>/?|'
+        for char in specialChars:
+            key = key.replace(char, '\%c'%char)
 
-        entity_cons_dict[key].append(in_entity_freq_dict[key] / len(key_list))
+        key_list = re.findall(key, sentence)
+        if orig_key not in entity_cons_dict:
+            entity_cons_dict[orig_key] = []
+
+        entity_cons_dict[orig_key].append(in_entity_freq_dict[orig_key] / len(key_list))
 
     return entity_freq_dict, entity_density_list, entity_cons_dict
 
@@ -118,18 +156,19 @@ def main():
             with open(data_dir+'/'+entity_name+'/'+'from_rawdata'+'/'+file_name, 'r') as fp:
                 data = json.load(fp)
                 token_freq_dict, entity_freq_dict = {}, {}
-                entity_cons_dict = {}
+                token_cons_dict, entity_cons_dict = {}, {}
                 doc_len,entity_density_list = [], []
 
                 for data_idx, data_inst in tqdm(enumerate(data), desc='Total Run'):
                     words = data_inst['str_words']
                     labels = data_inst['tags']
                     
-                    token_freq_dict = token_frequency(token_freq_dict, words, labels)
+                    token_freq_dict, token_cons_dict = token_frequency(token_freq_dict, token_cons_dict, words, labels)
                     entity_freq_dict, entity_density_list, entity_cons_dict = entity_frequency(entity_freq_dict, entity_density_list, entity_cons_dict, words, labels)
                     doc_len = document_length(doc_len, words)
 
                 entity_len_dict = entity_length(entity_freq_dict)
+                
                     
 if __name__ == "__main__":
     main()
