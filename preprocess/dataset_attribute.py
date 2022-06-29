@@ -143,8 +143,32 @@ def document_length(doc_len, words):
     doc_len.append(len(words))
     return doc_len
 
-def out_of_density():
-    return None
+def out_of_density(train_entity_freq_dict, test_entity_freq_dict, out_of_dens_dict, test_doc_len, test_data):
+    train_entity_set = set([key for key in train_entity_freq_dict.keys()])
+    test_entity_set = set([key for key in test_entity_freq_dict.keys()])
+
+    diff_set = train_entity_set - test_entity_set
+
+    for data_idx, data_inst in tqdm(enumerate(test_data), desc='Out of Density'):
+        words = data_inst['str_words']
+        labels = data_inst['tags']
+
+        sentence = " ".join([word for word in words])
+
+        for key in list(diff_set):
+            orig_key = copy.deepcopy(key)
+            specialChars = '~`!@#$%^&*()_-+=[{]}:;\'",<.>/?|'
+            for char in specialChars:
+                key = key.replace(char, '\%c'%char)
+
+            key_list = re.findall(key, sentence)
+
+            if key_list:
+                if key not in out_of_dens_dict:
+                    out_of_dens_dict[key] = []
+                out_of_dens_dict[key].append(len(key.split()) / test_doc_len[data_idx])
+
+    return out_of_dens_dict
 
 def main():
     data_dir = '/ssd1/minbyul/docner/data/low-resource'
@@ -152,6 +176,7 @@ def main():
     file_list = ['doc_train.json', 'doc_dev.json', 'doc_test.json']
     # entity_name = 'ncbi-disease' 
     for entity_name in entity_list:
+        out_of_dens_dict = {}
         for file_name in file_list:
             with open(data_dir+'/'+entity_name+'/'+'from_rawdata'+'/'+file_name, 'r') as fp:
                 data = json.load(fp)
@@ -168,7 +193,19 @@ def main():
                     doc_len = document_length(doc_len, words)
 
                 entity_len_dict = entity_length(entity_freq_dict)
+
+            if 'train' in file_name:
+                train_entity_freq_dict = copy.deepcopy(entity_freq_dict)
                 
+            if 'test' in file_name:
+                test_data = copy.deepcopy(data)
+                test_entity_freq_dict = copy.deepcopy(entity_freq_dict)
+                test_doc_len = copy.deepcopy(doc_len)
+
+        # get out of density through a set of training entites 
+        out_of_dens_dict = out_of_density(train_entity_freq_dict, test_entity_freq_dict, out_of_dens_dict, test_doc_len, test_data)
+        
+
                     
 if __name__ == "__main__":
     main()
