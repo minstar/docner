@@ -170,6 +170,28 @@ def out_of_density(train_entity_freq_dict, test_entity_freq_dict, out_of_dens_di
 
     return out_of_dens_dict
 
+def length_per_cons(train_entity_freq_dict, train_entity_cons_dict):
+    length_cons_dict = {}
+    for key, val in train_entity_freq_dict.items():
+        if len(key.split()) not in length_cons_dict:
+            length_cons_dict[len(key.split())] = []
+
+    for key, val in train_entity_cons_dict.items():
+        length_cons_dict[len(key.split())].append(np.mean(val))
+
+    for key in sorted(length_cons_dict):
+        print ("length:%d, mean consistency:%.4f" % (key, np.mean(length_cons_dict[key])))
+    
+    print ()
+    return length_cons_dict
+
+# def dens_per_cons(train_entity_freq_dict, train_entity_density_list):
+#     dens_cons_dict = {}
+#     import pdb; pdb.set_trace()
+#     # for key, val in train_entity_freq_dict.items():
+        
+#     return dens_cons_dict
+
 def main():
     data_dir = '/ssd1/minbyul/docner/data/low-resource'
     entity_list = ['ncbi-disease', 'bc5cdr', 'anatem', 'gellus']
@@ -196,11 +218,17 @@ def main():
 
             if 'train' in file_name:
                 train_entity_freq_dict = copy.deepcopy(entity_freq_dict)
-                
+                train_entity_cons_dict = copy.deepcopy(entity_cons_dict)
+                # train_entity_density_list = copy.deepcopy(entity_density_list)
+
             if 'test' in file_name:
                 test_data = copy.deepcopy(data)
                 test_entity_freq_dict = copy.deepcopy(entity_freq_dict)
                 test_doc_len = copy.deepcopy(doc_len)
+
+        length_cons_dict = length_per_cons(train_entity_freq_dict, train_entity_cons_dict)
+
+        # dens_cons_dict = dens_per_cons(train_entity_freq_dict, train_entity_density_list)
 
         # get out of density through a set of training entites 
         # out_of_dens_dict = out_of_density(train_entity_freq_dict, test_entity_freq_dict, out_of_dens_dict, test_doc_len, test_data)
@@ -209,6 +237,8 @@ def main():
         #     get_list.append(np.mean(val_list))
 
         # print (np.mean(get_list), np.std(get_list))
+
+        
 
 if __name__ == "__main__":
     main()
