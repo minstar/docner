@@ -164,9 +164,9 @@ def out_of_density(train_entity_freq_dict, test_entity_freq_dict, out_of_dens_di
             key_list = re.findall(key, sentence)
 
             if key_list:
-                if key not in out_of_dens_dict:
-                    out_of_dens_dict[key] = []
-                out_of_dens_dict[key].append(len(key.split()) / test_doc_len[data_idx])
+                if orig_key not in out_of_dens_dict:
+                    out_of_dens_dict[orig_key] = []
+                out_of_dens_dict[orig_key].append(len(orig_key.split()) / test_doc_len[data_idx])
 
     return out_of_dens_dict
 
@@ -203,9 +203,12 @@ def main():
                 test_doc_len = copy.deepcopy(doc_len)
 
         # get out of density through a set of training entites 
-        out_of_dens_dict = out_of_density(train_entity_freq_dict, test_entity_freq_dict, out_of_dens_dict, test_doc_len, test_data)
-        
+        # out_of_dens_dict = out_of_density(train_entity_freq_dict, test_entity_freq_dict, out_of_dens_dict, test_doc_len, test_data)
+        # get_list = []
+        # for key, val_list in out_of_dens_dict.items():
+        #     get_list.append(np.mean(val_list))
 
-                    
+        # print (np.mean(get_list), np.std(get_list))
+
 if __name__ == "__main__":
     main()
