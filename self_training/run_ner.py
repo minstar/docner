@@ -24,6 +24,7 @@ import math
 import json
 import numpy as np
 import torch
+import wandb
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
@@ -199,14 +200,13 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id):
 
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
-            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
+            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3], "entity_ids":batch[-2]}
             #inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[4]}
             if args.model_type != "distilbert":
                 inputs["token_type_ids"] = (
                     batch[2] if args.model_type in ["bert", "biobert", "xlnet"] else None
                 )  # XLM and RoBERTa don"t use segment_ids
 
-            # import ipdb; ipdb.set_trace()
             outputs = model(**inputs)
             loss, logits, final_embeds = outputs[0], outputs[1], outputs[2] # model outputs are always tuple in pytorch-transformers (see doc)
             mt_loss, vat_loss = 0, 0
@@ -325,7 +325,9 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id):
                             loss - args.mt_beta * mt_loss - args.vat_beta * vat_loss, \
                             args.mt_beta * mt_loss, args.vat_beta * vat_loss)
                         
-                        results, _, best_dev, is_updated = evaluate(args, model, tokenizer, labels, pad_token_label_id, best_dev, mode="dev", prefix='dev [Step {}/{} | Epoch {}/{}]'.format(global_step, t_total, epoch, args.num_train_epochs), verbose=False)
+                        # results, _, best_dev, is_updated = evaluate(args, model, tokenizer, labels, pad_token_label_id, best_dev, mode="sent_dev", prefix='dev [Step {}/{} | Epoch {}/{}]'.format(global_step, t_total, epoch, args.num_train_epochs), verbose=False)
+                        results, _, best_dev, is_updated = evaluate(args, model, tokenizer, labels, pad_token_label_id, best_dev, mode="doc_dev", prefix='dev [Step {}/{} | Epoch {}/{}]'.format(global_step, t_total, epoch, args.num_train_epochs), verbose=False, entity_name=args.data_name)
+                        # results, _, best_dev, is_updated = evaluate(args, model, tokenizer, labels, pad_token_label_id, best_dev, mode="doc_dev_CRF", prefix='dev [Step {}/{} | Epoch {}/{}]'.format(global_step, t_total, epoch, args.num_train_epochs), verbose=False)
                         for key, value in results.items():
                             tb_writer.add_scalar("eval_{}".format(key), value, global_step)
 
@@ -458,7 +460,7 @@ def main():
     parser.add_argument("--weight_decay", default=0.0, type=float, help="Weight decay if we apply some.")
     parser.add_argument("--adam_epsilon", default=1e-8, type=float, help="Epsilon for Adam optimizer.")
     parser.add_argument("--adam_beta1", default=0.9, type=float, help="BETA1 for Adam optimizer.")
-    parser.add_argument("--adam_beta2", default=0.999, type=float, help="BETA2 for Adam optimizer.")
+    parser.add_argument("--adam_beta2", default=0.98, type=float, help="BETA2 for Adam optimizer.") # 0.999
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument(
         "--num_train_epochs", default=3.0, type=float, help="Total number of training epochs to perform."
@@ -471,8 +473,8 @@ def main():
     )
     parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
 
-    parser.add_argument("--logging_steps", type=int, default=50, help="Log every X updates steps.")
-    parser.add_argument("--save_steps", type=int, default=50, help="Save checkpoint every X updates steps.")
+    parser.add_argument("--logging_steps", type=int, default=10000, help="Log every X updates steps.")
+    parser.add_argument("--save_steps", type=int, default=10000, help="Save checkpoint every X updates steps.")
     parser.add_argument(
         "--eval_all_checkpoints",
         action="store_true",
@@ -485,7 +487,7 @@ def main():
     parser.add_argument(
         "--overwrite_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
     )
-    parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
+    parser.add_argument("--seed", type=int, default=1, help="random seed for initialization")
 
     parser.add_argument(
         "--fp16",
@@ -528,8 +530,13 @@ def main():
     parser.add_argument('--remove_labels_from_weak', action="store_true", help = 'Use data from weak.json, and remove their labels for semi-supervised learning')
     parser.add_argument('--rep_train_against_weak', type = int, default = 1, help = 'Upsampling training data again weak data. Default: 1')
 
-
+    # use wandb
+    parser.add_argument('--wandb_name', type=str, default=None, help='Name of Wandb runs')
+    parser.add_argument('--data_type', type=str, default="str", help='Name of context level (e.g., sentence, document)')
+    parser.add_argument('--data_name', type=str, default=None, help='Name of dataset')
     args = parser.parse_args()
+    
+    wandb.init(project="docner", name=args.wandb_name) # need check
 
     if (
         os.path.exists(args.output_dir)
@@ -589,7 +596,8 @@ def main():
     labels = get_labels(args)
     num_labels = len(labels)
     # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
-    pad_token_label_id = CrossEntropyLoss().ignore_index
+    # pad_token_label_id = CrossEntropyLoss().ignore_index
+    pad_token_label_id = 0
 
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
@@ -623,10 +631,12 @@ def main():
 
     # Training
     if args.do_train:
-        train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="train")
+        # train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="sent_train", entity_name=args.data_name)
+        train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="doc_train", entity_name=args.data_name)
+        # train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="doc_train_CRF", entity_name=args.data_name)
         # import ipdb; ipdb.set_trace()
         if args.load_weak:
-            weak_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="weak", remove_labels=args.remove_labels_from_weak)
+            weak_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="weak", entity_name=args.data_name, remove_labels=args.remove_labels_from_weak)
             train_dataset = torch.utils.data.ConcatDataset([train_dataset]*args.rep_train_against_weak + [weak_dataset,])
             
         global_step, tr_loss, best_dev, best_test = train(args, train_dataset, model, tokenizer, labels, pad_token_label_id)
@@ -660,7 +670,9 @@ def main():
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             model = model_class.from_pretrained(checkpoint)
             model.to(args.device)
-            result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="dev", prefix=global_step)
+            # result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="sent_dev", entity_name=args.data_name, prefix=global_step)
+            result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="doc_dev", entity_name=args.data_name, prefix=global_step)
+            # result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="doc_dev_CRF", entity_name=args.data_name, prefix=global_step)
             if global_step:
                 result = {"{}_{}".format(global_step, k): v for k, v in result.items()}
             results.update(result)
@@ -676,16 +688,24 @@ def main():
         model.to(args.device)
         best_test = [0, 0, 0]
         
-        result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, mode="test")
+        # result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, mode="sent_test", entity_name=args.data_name)
+        result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, mode="doc_test", entity_name=args.data_name)
+        # result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, mode="doc_test_CRF", entity_name=args.data_name)
         # Save results
         output_test_results_file = os.path.join(model_path, "test_results.txt")
         with open(output_test_results_file, "w") as writer:
             for key in sorted(result.keys()):
                 writer.write("{} = {}\n".format(key, str(result[key])))
+
+        wandb.log({"test_precision": result['best_precision'],
+                    "test_recall": result['best_recall'],
+                    "test_f1": result['best_f1']})
+
         # Save predictions
         output_test_predictions_file = os.path.join(model_path, "test_predictions.txt")
         with open(output_test_predictions_file, "w") as writer:
-            with open(os.path.join(args.eval_dir, "test.json"), "r") as f:
+            # with open(os.path.join(args.eval_dir, "sent_test.json"), "r") as f:
+            with open(os.path.join(args.eval_dir, "doc_test.json"), "r") as f:
                 example_id = 0
                 data = json.load(f)
                 for item in data:
