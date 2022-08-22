@@ -58,8 +58,8 @@ class RobertaForTokenClassification_v2(BertPreTrainedModel):
         self.bilstm = nn.LSTM(config.hidden_size, config.hidden_size, num_layers=2, bidirectional=True, batch_first=True)
         self.softmax = nn.Softmax(dim=2)
 
-        # self.epsilon = 1e-8
-        # self.threshold = 0.2
+        self.epsilon = 1e-8
+        self.threshold = 0.2
 
         self.init_weights()
 
@@ -124,8 +124,15 @@ class RobertaForTokenClassification_v2(BertPreTrainedModel):
 
             """ update entities with lstm and mlp classifier """
             lstm_feats = lstm_feats * entity_ids # mask for only updated entities
-
             
+            """ update through uncertainties """
+            uncertainty = -torch.sum(sft_logits * torch.log(sft_logits + self.epsilon), dim=2)
+            ones = torch.ones(uncertainty.shape).to(device)
+            zeros = torch.zeros(uncertainty.shape).to(device)
+            uncertainty_mask = torch.where(uncertainty > self.threshold, ones, zeros)
+            uncertainty_mask = uncertainty_mask[:,:,None]
+            lstm_feats = lstm_feats * uncertainty_mask
+
         outputs = (logits, final_embedding, ) + outputs[2:]  # add hidden states and attention if they are here
         if labels is not None:
 

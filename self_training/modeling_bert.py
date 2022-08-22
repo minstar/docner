@@ -67,6 +67,14 @@ class BERTForTokenClassification_v2(BertForTokenClassification):
             """ update entities with lstm and mlp classifier """
             lstm_feats = lstm_feats * entity_ids # mask for only updated entities
 
+            """ update through uncertainties """
+            uncertainty = -torch.sum(sft_logits * torch.log(sft_logits + self.epsilon), dim=2)
+            ones = torch.ones(uncertainty.shape).to(device)
+            zeros = torch.zeros(uncertainty.shape).to(device)
+            uncertainty_mask = torch.where(uncertainty > self.threshold, ones, zeros)
+            uncertainty_mask = uncertainty_mask[:,:,None]
+            lstm_feats = lstm_feats * uncertainty_mask
+
         outputs = (logits,sequence_output) + outputs[2:]  # add hidden states and attention if they are here
         if labels is not None:
 
