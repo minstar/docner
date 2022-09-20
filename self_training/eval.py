@@ -25,9 +25,9 @@ from data_utils import load_and_cache_examples, tag_to_id, get_chunks
 from flashtool import Logger
 logger = logging.getLogger(__name__)
 
-def evaluate(args, model, tokenizer, labels, pad_token_label_id, best, mode, prefix="", verbose=True):
+def evaluate(args, model, tokenizer, labels, pad_token_label_id, best, mode, entity_name, prefix="", verbose=True):
     
-    eval_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode=mode)
+    eval_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode=mode, entity_name=entity_name)
 
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
@@ -46,6 +46,7 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, best, mode, pre
     nb_eval_steps = 0
     preds = None
     out_label_ids = None
+    # attention_ids = None
     model.eval()
     for batch in tqdm(eval_dataloader, desc="Evaluating"):
         batch = tuple(t.to(args.device) for t in batch)
@@ -67,9 +68,11 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, best, mode, pre
         if preds is None:
             preds = logits.detach().cpu().numpy()
             out_label_ids = inputs["labels"].detach().cpu().numpy()
+            # attention_ids = inputs["input_ids"].detach().cpu().numpy()
         else:
             preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
             out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
+            # attention_ids = np.append(attention_ids, inputs["input_ids"].detach().cpu().numpy(), axis=0)
 
     eval_loss = eval_loss / nb_eval_steps
     preds = np.argmax(preds, axis=2)
@@ -85,7 +88,11 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, best, mode, pre
                 preds_list[i].append(label_map[preds[i][j]])
                 out_id_list[i].append(out_label_ids[i][j])
                 preds_id_list[i].append(preds[i][j])
-
+            # if attention_ids[i, j] not in [0,1,2]:
+            #     preds_list[i].append(label_map[preds[i][j]])
+            #     out_id_list[i].append(out_label_ids[i][j])
+            #     preds_id_list[i].append(preds[i][j])
+    
     correct_preds, total_correct, total_preds = 0., 0., 0. # i variables
     for ground_truth_id,predicted_id in zip(out_id_list,preds_id_list):
         # We use the get chunks function defined above to get the true chunks

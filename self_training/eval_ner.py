@@ -188,7 +188,6 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id):
     if args.mt:
         teacher_model = model
     
-
     for epoch in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
@@ -532,6 +531,8 @@ def main():
 
     # use wandb
     parser.add_argument('--wandb_name', type=str, default=None, help='Name of Wandb runs')
+    parser.add_argument('--data_type', type=str, default="str", help='Name of context level (e.g., sentence, document)')
+    parser.add_argument('--data_name', type=str, default=None, help='Name of dataset')
 
     args = parser.parse_args()
     
@@ -595,7 +596,8 @@ def main():
     labels = get_labels(args)
     num_labels = len(labels)
     # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
-    pad_token_label_id = CrossEntropyLoss().ignore_index
+    # pad_token_label_id = CrossEntropyLoss().ignore_index
+    pad_token_label_id = 0
 
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
@@ -603,6 +605,7 @@ def main():
 
     args.model_type = args.model_type.lower()
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+    args.model_name_or_path = os.path.join(args.model_name_or_path, "checkpoint-best")
     config = config_class.from_pretrained(
         args.config_name if args.config_name else args.model_name_or_path,
         num_labels=num_labels,
@@ -630,10 +633,10 @@ def main():
     # Training
     if args.do_train:
         # train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="train")
-        train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="doc_train")
+        train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="doc_train", entity_name=args.data_name)
         # import ipdb; ipdb.set_trace()
         if args.load_weak:
-            weak_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="weak", remove_labels=args.remove_labels_from_weak)
+            weak_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="weak", entity_name=args.data_name, remove_labels=args.remove_labels_from_weak)
             train_dataset = torch.utils.data.ConcatDataset([train_dataset]*args.rep_train_against_weak + [weak_dataset,])
             
         global_step, tr_loss, best_dev, best_test = train(args, train_dataset, model, tokenizer, labels, pad_token_label_id)
@@ -667,8 +670,8 @@ def main():
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             model = model_class.from_pretrained(checkpoint)
             model.to(args.device)
-            # result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="dev", prefix=global_step)
-            result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="doc_dev", prefix=global_step)
+            # result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="sent_dev", entity_name=args.data_name, prefix=global_step)
+            result, _, best_dev, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_dev, mode="doc_dev", entity_name=args.data_name, prefix=global_step)
             if global_step:
                 result = {"{}_{}".format(global_step, k): v for k, v in result.items()}
             results.update(result)
@@ -678,44 +681,36 @@ def main():
                 writer.write("{} = {}\n".format(key, str(results[key])))
 
     if args.do_predict and args.local_rank in [-1, 0]:
-        tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
-        model_path = os.path.join(args.output_dir, "checkpoint-best")
+        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+        if "checkpoint-best" in args.model_name_or_path:
+            model_path = args.model_name_or_path
+        else:
+            model_path = os.path.join(args.model_name_or_path, "checkpoint-best")
         model = model_class.from_pretrained(model_path)
         model.to(args.device)
         best_test = [0, 0, 0]
         
-        # result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, mode="test")
-        result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, mode="doc_test")
+        # result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, entity_name=args.data_name, mode="sent_test")
+        result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, entity_name=args.data_name, mode="doc_test")
         # Save results
         output_test_results_file = os.path.join(model_path, "test_results.txt")
         with open(output_test_results_file, "w") as writer:
             for key in sorted(result.keys()):
                 writer.write("{} = {}\n".format(key, str(result[key])))
         # Save predictions
-        output_test_predictions_file = os.path.join(model_path, "preds_doc_test.json")
-        with open(output_test_predictions_file, "w") as writer:
-            # with open(os.path.join(args.eval_dir, "test.json"), "r") as f:
-            with open(os.path.join(args.eval_dir, "doc_test.json"), "r") as f:
-                data = json.load(f)
-                label_dict = {label:i for i,label in enumerate(labels)}
-                total_list = []
-                for item_idx, item in enumerate(data):
-                    preds_dict = {"str_words":item['str_words'], 'tags':[]}
-                    
-                    for inst_idx, word_pred in enumerate(predictions[item_idx]):
-                        preds_dict['tags'].append(label_dict[word_pred])
 
-                    total_list.append(preds_dict)
-                    # for inst_idx, (word, word_label, word_pred) in enumerate(zip(item['str_words'], item['tags'], predictions[item_idx])):
-                    #     output_line = str(word) + " " + str(labels[word_label]) + " " + str(word_pred) + "\n"
-                    #     # output_line = str(item["str_words"]) + " " + predictions[example_id].pop(0) + "\n"
-                    #     writer.write(output_line)
-                
-            json.dump(total_list, writer)
-            
-        wandb.log({"test_precision": result['best_precision'],
-                    "test_recall": result['best_recall'],
-                    "test_f1": result['best_f1']})
+        output_test_predictions_file = os.path.join(model_path, "test_predictions.txt")
+        with open(output_test_predictions_file, "w") as writer:
+            # with open(os.path.join(args.eval_dir, "sent_test.json"), "r") as f:
+            with open(os.path.join(args.eval_dir, "doc_test.json"), "r") as f:
+                example_id = 0
+                data = json.load(f)
+                for item in data:
+                    for word_idx in range(len(predictions[example_id])):
+                        output_line = str(item["str_words"][word_idx]) + " " + str(item["tags"][word_idx]) + " " + predictions[example_id][word_idx] + "\n"
+                        writer.write(output_line)
+                    example_id += 1
+
     return results
 
 

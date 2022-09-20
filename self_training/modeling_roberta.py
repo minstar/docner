@@ -54,12 +54,13 @@ class RobertaForTokenClassification_v2(BertPreTrainedModel):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
         self.classifier2 = nn.Linear(config.hidden_size*2, config.num_labels)
-        self.crf = CRF(self.num_labels, batch_first=True)
+        # self.crf = CRF(self.num_labels, batch_first=True)
         self.bilstm = nn.LSTM(config.hidden_size, config.hidden_size, num_layers=2, bidirectional=True, batch_first=True)
         self.softmax = nn.Softmax(dim=2)
-
+        self.lambda1 = 3.0
+        self.lambda2 = 1e-3
         self.epsilon = 1e-8
-        self.threshold = 0.2
+        self.threshold = 0.3
 
         self.init_weights()
 
@@ -93,19 +94,10 @@ class RobertaForTokenClassification_v2(BertPreTrainedModel):
         sequence_output = self.dropout(final_embedding)
 
         logits = self.classifier(sequence_output)
-        # make representation similar on same entities (without regarding to context representation)
-        # (uncertainty < self.threshold)
-        # soft_logits = self.softmax(logits)
-        # uncertainty = -torch.sum(soft_logits * torch.log(soft_logits + self.epsilon), dim=2)
-        
-        # make label refinement on true label
-        # uncertainty_bool = uncertainty > self.threshold # below our threshold means it doesn't need any label refinement
-
         """ Bilstm for label refinement """
         if entity_ids is not None:
             entity_ids = entity_ids[:,:,None]
             bilstm_hidden = self.rand_init_hidden(batch_size)
-            
             fst_bilstm_hidden = bilstm_hidden[0].to(device)
             bst_bilstm_hidden = bilstm_hidden[1].to(device)
 
@@ -123,7 +115,8 @@ class RobertaForTokenClassification_v2(BertPreTrainedModel):
             kl_distill = (kl_logit_lstm + kl_lstm_logit) / 2
 
             """ update entities with lstm and mlp classifier """
-            lstm_feats = lstm_feats * entity_ids # mask for only updated entities
+            # lstm_feats = lstm_feats * entity_ids # mask for only updated entities
+            sft_feats = sft_feats * entity_ids
             
             """ update through uncertainties """
             uncertainty = -torch.sum(sft_logits * torch.log(sft_logits + self.epsilon), dim=2)
@@ -131,7 +124,9 @@ class RobertaForTokenClassification_v2(BertPreTrainedModel):
             zeros = torch.zeros(uncertainty.shape).to(device)
             uncertainty_mask = torch.where(uncertainty > self.threshold, ones, zeros)
             uncertainty_mask = uncertainty_mask[:,:,None]
-            lstm_feats = lstm_feats * uncertainty_mask
+            lstm_feats = sft_feats * uncertainty_mask
+
+            logits = logits + lstm_feats
 
         outputs = (logits, final_embedding, ) + outputs[2:]  # add hidden states and attention if they are here
         if labels is not None:
@@ -161,8 +156,13 @@ class RobertaForTokenClassification_v2(BertPreTrainedModel):
                     loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
             if entity_ids is not None:
-                lstm_crf = self.crf(lstm_feats, labels, mask=attention_mask)
-                final_loss = loss + (-1e-4) * lstm_crf + (1e-4) * kl_distill
+                active_lstm_logits = lstm_feats.view(-1, self.num_labels)[active_loss]
+                lstm_loss = loss_fct(active_lstm_logits, active_labels)
+                final_loss = loss + (self.lambda1) * lstm_loss + (self.lambda2) * kl_distill
+                # lstm_crf = self.crf(lstm_feats, labels, mask=attention_mask)
+                # final_loss = loss + (-self.lambda1) * lstm_crf + (self.lambda2) * kl_distill
+                # final_loss = loss + self.lambda2 * kl_distill
+                # final_loss = loss
                 outputs = (final_loss,) + outputs
             else:
                 outputs = (loss,) + outputs

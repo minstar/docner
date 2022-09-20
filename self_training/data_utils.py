@@ -43,7 +43,7 @@ class InputExample(object):
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_ids, full_label_ids, hp_label_ids):
+    def __init__(self, input_ids, input_mask, segment_ids, label_ids, full_label_ids, hp_label_ids, entity_ids):
         
         self.input_ids = input_ids
         self.input_mask = input_mask
@@ -51,6 +51,7 @@ class InputFeatures(object):
         self.label_ids = label_ids
         self.full_label_ids = full_label_ids
         self.hp_label_ids = hp_label_ids
+        self.entity_ids = entity_ids
 
 def read_examples_from_file(data_dir, mode):
     
@@ -91,6 +92,7 @@ def convert_examples_to_features(
     sequence_a_segment_id=0,
     mask_padding_with_zero=True,
     show_exnum = -1,
+    entity_name=None,
 ):
     """ Loads a data file into a list of `InputBatch`s
         `cls_token_at_end` define the location of the CLS token:
@@ -98,6 +100,30 @@ def convert_examples_to_features(
             - True (XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
         `cls_token_segment_id` define the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
     """
+    def cnt_function(entity_freq_dict, entity, entity_num, entity_ids, tokenizer):
+        entity = entity.strip()
+        if entity not in entity_freq_dict:
+            entity_freq_dict[entity] = entity_num
+            entity_num += 1
+
+        # total_len = 0
+        for entity_word in entity.split():
+            tokenized = tokenizer.tokenize(entity_word)
+            # total_len += len(tokenized)
+            for _ in range(len(tokenized)):
+                entity_ids.append(1)
+        
+        # for entity_word in entity.split():
+        #     tokenized = tokenizer.tokenize(entity_word)
+        #     for _ in range(len(tokenized)):
+        #         if total_len >= 10:
+        #             entity_ids.append(1)
+        #         else:
+        #             entity_ids.append(0)
+
+        entity = ""
+        return entity_freq_dict, entity, entity_num, entity_ids
+
     features = []
     extra_long_samples = 0
     for (ex_index, example) in enumerate(examples):
@@ -108,16 +134,71 @@ def convert_examples_to_features(
         label_ids = []
         full_label_ids = []
         hp_label_ids = []
-        for word, label, hp_label in zip(example.words, example.labels, example.hp_labels):
+        entity_ids = []
+
+        entity = ""
+        entity_num = 1
+        entity_freq_dict = {}
+        
+        for inst_idx, (word, label, hp_label) in enumerate(zip(example.words, example.labels, example.hp_labels)):
             word_tokens = tokenizer.tokenize(word)
             if(len(word_tokens) == 0):
                 continue
             tokens.extend(word_tokens)
+
             # Use the real label id for the first token of the word, and padding ids for the remaining tokens
             label_ids.extend([label] + [pad_token_label_id] * (len(word_tokens) - 1))
             hp_label_ids.extend([hp_label if hp_label is not None else pad_token_label_id] + [pad_token_label_id] * (len(word_tokens) - 1))
-            full_label_ids.extend([label] * len(word_tokens) )
+            full_label_ids.extend([label] * len(word_tokens))
+            # entity_ids.extend([0] * len(word_tokens))
+            if label != 0:
+                if label in [1, 2]:
+                    # B
+                    entity += word + " "
+                    try:
+                        if 'bc5cdr' == entity_name:
+                            if example.labels[inst_idx+1] == 0 or example.labels[inst_idx+1] == 1 or example.labels[inst_idx+1] == 2:
+                                entity_freq_dict, entity, entity_num, entity_ids = cnt_function(entity_freq_dict, entity, entity_num, entity_ids, tokenizer)
+                            else:
+                                continue
+                        else:
+                            if example.labels[inst_idx+1] == 0 or example.labels[inst_idx+1] == 1:
+                                entity_freq_dict, entity, entity_num, entity_ids = cnt_function(entity_freq_dict, entity, entity_num, entity_ids, tokenizer)
+                            else:
+                                continue
+                    except:
+                        entity_freq_dict, entity, entity_num, entity_ids = cnt_function(entity_freq_dict, entity, entity_num, entity_ids, tokenizer)
+                else:
+                    # I
+                    entity += word + " "
+                    try:
+                        if example.labels[inst_idx+1] != 0:
+                            continue
+                        else:
+                            entity_freq_dict, entity, entity_num, entity_ids = cnt_function(entity_freq_dict, entity, entity_num, entity_ids, tokenizer)
+                    except:
+                        entity_freq_dict, entity, entity_num, entity_ids = cnt_function(entity_freq_dict, entity, entity_num, entity_ids, tokenizer)
+            else:
+                entity_ids.extend([0] * len(word_tokens))
 
+            # if len(word_tokens) > 1:
+            #     for word_idx, tokenized_word in enumerate(word_tokens):
+            #         if label == 1:
+            #             if word_idx == 0:
+            #                 label_ids.extend([label])
+            #             else:
+            #                 label_ids.extend([3])
+            #         elif label == 2:
+            #             if word_idx == 0:
+            #                 label_ids.extend([label])
+            #             else:
+            #                 label_ids.extend([4])  
+            #         else:
+            #             label_ids.extend([label])
+            # else:
+                # Use the real label id for the first token of the word, and padding ids for the remaining tokens
+                # label_ids.extend([label] + [pad_token_label_id] * (len(word_tokens) - 1))
+            
         # Account for [CLS] and [SEP] with "- 2" and with "- 3" for RoBERTa.
         special_tokens_count = 3 if sep_token_extra else 2
         if len(tokens) > max_seq_length - special_tokens_count:
@@ -125,6 +206,7 @@ def convert_examples_to_features(
             label_ids = label_ids[: (max_seq_length - special_tokens_count)]
             hp_label_ids = hp_label_ids[: (max_seq_length - special_tokens_count)]
             full_label_ids = full_label_ids[: (max_seq_length - special_tokens_count)]
+            entity_ids = entity_ids[: (max_seq_length - special_tokens_count)]
             extra_long_samples += 1
 
         # The convention in BERT is:
@@ -149,12 +231,14 @@ def convert_examples_to_features(
         label_ids += [pad_token_label_id]
         hp_label_ids += [pad_token_label_id]
         full_label_ids += [pad_token_label_id]
+        entity_ids += [pad_token_label_id]
         if sep_token_extra:
             # roberta uses an extra separator b/w pairs of sentences
             tokens += [sep_token]
             label_ids += [pad_token_label_id]
             hp_label_ids += [pad_token_label_id]
             full_label_ids += [pad_token_label_id]
+            entity_ids += [pad_token_label_id]
         segment_ids = [sequence_a_segment_id] * len(tokens)
 
         if cls_token_at_end:
@@ -163,12 +247,14 @@ def convert_examples_to_features(
             hp_label_ids += [pad_token_label_id]
             full_label_ids += [pad_token_label_id]
             segment_ids += [cls_token_segment_id]
+            entity_ids += [pad_token_label_id]
         else:
             tokens = [cls_token] + tokens
             label_ids = [pad_token_label_id] + label_ids
             hp_label_ids = [pad_token_label_id] + hp_label_ids
             full_label_ids = [pad_token_label_id] + full_label_ids
             segment_ids = [cls_token_segment_id] + segment_ids
+            entity_ids = [pad_token_label_id] + entity_ids
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
@@ -185,6 +271,7 @@ def convert_examples_to_features(
             label_ids = ([pad_token_label_id] * padding_length) + label_ids
             hp_label_ids = ([pad_token_label_id] * padding_length) + hp_label_ids
             full_label_ids = ([pad_token_label_id] * padding_length) + full_label_ids
+            entity_ids = ([pad_token_label_id] * padding_length) + entity_ids
         else:
             input_ids += [pad_token] * padding_length
             input_mask += [0 if mask_padding_with_zero else 1] * padding_length
@@ -192,6 +279,7 @@ def convert_examples_to_features(
             label_ids += [pad_token_label_id] * padding_length
             hp_label_ids += [pad_token_label_id] * padding_length
             full_label_ids += [pad_token_label_id] * padding_length
+            entity_ids += [pad_token_label_id] * padding_length
 
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
@@ -199,7 +287,8 @@ def convert_examples_to_features(
         assert len(label_ids) == max_seq_length
         assert len(hp_label_ids) == max_seq_length
         assert len(full_label_ids) == max_seq_length
-
+        assert len(entity_ids) == max_seq_length
+        
         if ex_index < show_exnum:
             logger.info("*** Example ***")
             logger.info("guid: %s", example.guid)
@@ -210,19 +299,22 @@ def convert_examples_to_features(
             logger.info("label_ids: %s", " ".join([str(x) for x in label_ids]))
             logger.info("hp_label_ids: %s", " ".join([str(x) for x in hp_label_ids]))
             logger.info("full_label_ids: %s", " ".join([str(x) for x in full_label_ids]))
+            logger.info("entity_ids: %s", " ".join([str(x) for x in entity_ids]))
 
         features.append(
-            InputFeatures(input_ids=input_ids, input_mask=input_mask, segment_ids=segment_ids, label_ids=label_ids, full_label_ids=full_label_ids, hp_label_ids=hp_label_ids)
+            # InputFeatures(input_ids=input_ids, input_mask=input_mask, segment_ids=segment_ids, label_ids=label_ids, full_label_ids=full_label_ids, hp_label_ids=hp_label_ids)
+            InputFeatures(input_ids=input_ids, input_mask=input_mask, segment_ids=segment_ids, label_ids=label_ids, full_label_ids=full_label_ids, hp_label_ids=hp_label_ids,
+                        entity_ids=entity_ids)
         )
     logger.info("Extra long example %d of %d", extra_long_samples, len(examples))
     return features
 
 
-def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode, remove_labels=False):
+def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode, entity_name, remove_labels=False):
     print(args)
-    if mode=='train':
+    if mode=='sent_train' or mode == 'doc_train' or mode == 'doc_train_CRF':
         data_dir = args.train_dir
-    elif mode=='dev' or mode=='test':
+    elif mode=='sent_dev' or mode=='sent_test' or mode == 'doc_dev' or mode == 'doc_test' or mode == 'doc_dev_CRF' or mode == 'doc_test_CRF':
         data_dir = args.eval_dir
     else:
         raise ValueError("Invalid mode")
@@ -233,8 +325,10 @@ def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode, r
     # Load data features from cache or dataset file
     cached_features_file = os.path.join(
         data_dir,
-        "cached_{}_{}_{}".format(
-            mode, list(filter(None, args.model_name_or_path.split("/"))).pop(), str(args.max_seq_length)
+        # "cached_{}_{}_{}".format(
+        #     mode, list(filter(None, args.model_name_or_path.split("/"))).pop(), str(args.max_seq_length),
+        "cached_{}_{}_{}_{}".format(
+            mode, list(filter(None, args.model_name_or_path.split("/"))).pop(), str(args.max_seq_length), "doc_cons" #import pdb; pdb.set_trace()
         ),
     )
 
@@ -261,6 +355,7 @@ def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode, r
             pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
             pad_token_segment_id=4 if args.model_type in ["xlnet"] else 0,
             pad_token_label_id=pad_token_label_id,
+            entity_name=entity_name,
         )
         if args.local_rank in [-1, 0]:
             logger.info("Saving features into cached file %s", cached_features_file)
@@ -276,16 +371,17 @@ def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode, r
     all_label_ids = torch.tensor([f.label_ids for f in features], dtype=torch.long)
     all_full_label_ids = torch.tensor([f.full_label_ids for f in features], dtype=torch.long)
     all_hp_label_ids = torch.tensor([f.hp_label_ids for f in features], dtype=torch.long)
+    all_entity_ids = torch.tensor([f.entity_ids for f in features], dtype=torch.long)
     if remove_labels:
         all_full_label_ids.fill_(pad_token_label_id)
         all_hp_label_ids.fill_(pad_token_label_id)
     all_ids = torch.tensor([f for f in range(len(features))], dtype=torch.long)
-
-    dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids, all_full_label_ids, all_hp_label_ids, all_ids)
+    dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids, all_full_label_ids, all_hp_label_ids, all_entity_ids, all_ids)
     return dataset
 
 def get_labels(args):
     tag2id_path = os.path.join(args.eval_dir, "tag_to_id.json")
+    # tag2id_path = os.path.join(args.eval_dir, "tag_to_id_crf.json")
 
     assert(os.path.exists(tag2id_path))
     
@@ -293,17 +389,21 @@ def get_labels(args):
     with open(tag2id_path, "r") as f:
         tag2id = json.load(f)
 
-        if not os.path.exists(os.path.join(args.train_dir, "train.json")) :
+        # if not os.path.exists(os.path.join(args.train_dir, "sent_train.json")) :
+        if not os.path.exists(os.path.join(args.train_dir, "doc_train.json")) :
+        # if not os.path.exists(os.path.join(args.train_dir, "doc_train_CRF.json")) :
             jsonl_data = [json.loads(line) for line in open(os.path.join(args.train_dir, "train_hf.json")).readlines()]
 
             train_data = []
             for d in jsonl_data :
                 train_data.append({
                     "str_words" : d['tokens'],
-                    "tags" : [tag2id[tag] for tag in d['ner_tags']]
+                    "tags" : [tag2id[tag] for tag in d['ner_tags']] # for CRF+1
                 })
 
-            json.dump(train_data, open(os.path.join(args.train_dir, "train.json"), "w"))
+            # json.dump(train_data, open(os.path.join(args.train_dir, "sent_train.json"), "w"))
+            json.dump(train_data, open(os.path.join(args.train_dir, "doc_train.json"), "w"))
+            # json.dump(train_data, open(os.path.join(args.train_dir, "doc_train_CRF.json"), "w"))
 
         for l, _ in tag2id.items():
             labels.append(l)
@@ -315,6 +415,7 @@ def tag_to_id(path = None, train_dir=None):
         path = ""
         
     tag2id_path = os.path.join(path, "tag_to_id.json")
+    # tag2id_path = os.path.join(path, "tag_to_id_crf.json")
     if os.path.exists(tag2id_path):
         with open(tag2id_path, 'r') as f:
             data = json.load(f)

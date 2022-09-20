@@ -19,9 +19,14 @@ class BERTForTokenClassification_v2(BertForTokenClassification):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
         self.classifier2 = nn.Linear(config.hidden_size*2, config.num_labels)
-        self.crf = CRF(self.num_labels, batch_first=True)
+        # self.crf = CRF(self.num_labels, batch_first=True)
         self.bilstm = nn.LSTM(config.hidden_size, config.hidden_size, num_layers=2, bidirectional=True, batch_first=True)
         self.softmax = nn.Softmax(dim=2)
+        self.lambda1 = 1e-1
+        self.lambda2 = 1e-3
+        self.epsilon = 1e-8
+        self.threshold = 0.3
+
         self.init_weights()
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None,
@@ -68,12 +73,13 @@ class BERTForTokenClassification_v2(BertForTokenClassification):
             lstm_feats = lstm_feats * entity_ids # mask for only updated entities
 
             """ update through uncertainties """
-            uncertainty = -torch.sum(sft_logits * torch.log(sft_logits + self.epsilon), dim=2)
+            uncertainty = -torch.sum(logits * torch.log(logits + self.epsilon), dim=2)
             ones = torch.ones(uncertainty.shape).to(device)
             zeros = torch.zeros(uncertainty.shape).to(device)
+
             uncertainty_mask = torch.where(uncertainty > self.threshold, ones, zeros)
-            uncertainty_mask = uncertainty_mask[:,:,None]
-            lstm_feats = lstm_feats * uncertainty_mask
+            lstm_uncertainty_mask = uncertainty_mask[:,:,None]
+            lstm_feats = lstm_feats * lstm_uncertainty_mask
 
         outputs = (logits,sequence_output) + outputs[2:]  # add hidden states and attention if they are here
         if labels is not None:
@@ -86,7 +92,6 @@ class BERTForTokenClassification_v2(BertForTokenClassification):
                 if label_mask is not None:
                     active_loss = active_loss & label_mask.view(-1)
                 active_logits = logits.view(-1, self.num_labels)[active_loss]
-
 
             if labels.shape == logits.shape:
                 loss_fct = KLDivLoss()
@@ -104,8 +109,11 @@ class BERTForTokenClassification_v2(BertForTokenClassification):
                     loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
             if entity_ids is not None:
-                lstm_crf = self.crf(lstm_feats, labels, mask=attention_mask)
-                final_loss = loss + (-1e-4) * lstm_crf + (1e-4) * kl_distill
+                active_lstm_logits = lstm_feats.view(-1, self.num_labels)[active_loss]
+                lstm_loss = loss_fct(active_lstm_logits, active_labels)
+                final_loss = loss + (self.lambda1) * lstm_loss + (self.lambda2) * kl_distill
+                # lstm_crf = self.crf(lstm_feats, labels, mask=attention_mask)
+                # final_loss = loss + (-self.lambda1) * lstm_crf + (self.lambda2) * kl_distill
                 outputs = (final_loss,) + outputs
             else:
                 outputs = (loss,) + outputs

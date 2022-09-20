@@ -596,9 +596,8 @@ def main():
     labels = get_labels(args)
     num_labels = len(labels)
     # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
-    # pad_token_label_id = CrossEntropyLoss().ignore_index
-    pad_token_label_id = 0
-
+    pad_token_label_id = CrossEntropyLoss().ignore_index
+    
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
@@ -709,8 +708,9 @@ def main():
                 example_id = 0
                 data = json.load(f)
                 for item in data:
-                    output_line = str(item["str_words"]) + " " + predictions[example_id].pop(0) + "\n"
-                    writer.write(output_line)
+                    for word_idx in range(len(predictions[example_id])):
+                        output_line = str(item["str_words"][word_idx]) + " " + str(item["tags"][word_idx]) + " " + predictions[example_id][word_idx] + "\n"
+                        writer.write(output_line)
                     example_id += 1
 
     return results
